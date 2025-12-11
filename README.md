@@ -2,8 +2,6 @@
 
 A modern, hotkey-driven audio typewriter that sits quietly on your screen. It records your voice, transcribes it using Groq Whisper, formats it into perfect text (or generates content from your instructions), and types it directly where your cursor is.
 
-![Audio Flow UI](https://via.placeholder.com/600x100?text=Audio+Flow+Interface)
-
 ## 🚀 Getting Started
 
 **For most users (No coding required):**
