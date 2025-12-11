@@ -78,7 +78,6 @@ class OverlapAudioManager:
         amplitude_queue: "queue.Queue[float]",
         segment_gap: float = 12.0,
         segment_duration: float = 15.0,
-        max_workers: int = 2,
         max_retries: int = 3,
     ) -> None:
         self.llm = llm
@@ -92,12 +91,7 @@ class OverlapAudioManager:
         self._active: List[RecordingSegment] = []
         self._lock = threading.Lock()
         self._paused = False
-        # Track in-flight transcriptions
-        self._transcribing = 0
-        self._transcribing_lock = threading.Lock()
-        # Pending segments to transcribe (start_time, path)
         self._pending_queue: queue.PriorityQueue[tuple[float, Path]] = queue.PriorityQueue()
-        # Transcription results ordered by start time
         self._results: List[tuple[float, str]] = []
         self._results_lock = threading.Lock()
         self._transcriber_thread: threading.Thread | None = None
@@ -154,8 +148,7 @@ class OverlapAudioManager:
             with self._lock:
                 self._active.append(segment)
             segment.start()
-            print(f"[Audio] Started recording segment")
-            # Start a watcher thread to queue segment for transcription when it finishes
+            # Start a watcher to queue segment for transcription when it finishes
             watcher = threading.Thread(
                 target=self._watch_segment,
                 args=(segment,),
@@ -169,49 +162,29 @@ class OverlapAudioManager:
         self._stop_active_segments()
 
     def _watch_segment(self, segment: RecordingSegment) -> None:
-        """Wait for segment to finish naturally (not stopped) and queue it for transcription."""
+        """Queue segment for transcription when it finishes naturally."""
         segment.join()
-        # Only queue if segment is still in active list (not already handled by _stop_active_segments)
         with self._lock:
             if segment in self._active:
                 self._active.remove(segment)
-                # Only queue if it finished naturally (has a file)
                 if segment.file_path and segment.file_path.exists():
-                    print(f"[Audio] Segment finished naturally, queuing: {segment.file_path}")
                     self._pending_queue.put((segment._started_at, segment.file_path))
 
     def _transcriber_loop(self) -> None:
-        """Process transcription queue - transcribe segments as they arrive."""
+        """Process transcription queue as segments arrive."""
         while True:
-            # Check if we should stop (stop requested AND queue empty AND nothing in flight)
-            if self._stop_all.is_set():
-                if self._pending_queue.empty():
-                    with self._transcribing_lock:
-                        if self._transcribing == 0:
-                            break
             try:
                 start_ts, path = self._pending_queue.get(timeout=0.5)
             except queue.Empty:
-                # If stop requested and queue empty, exit
                 if self._stop_all.is_set():
                     break
                 continue
-            
-            with self._transcribing_lock:
-                self._transcribing += 1
-            try:
-                print(f"Transcribing segment...")
-                text = self._transcribe_single(path)
-                if text:
-                    with self._results_lock:
-                        self._results.append((start_ts, text.strip()))
-                    # Write to file immediately (sorted)
-                    self._write_transcript()
-                    print(f"Segment transcribed.")
-                path.unlink(missing_ok=True)
-            finally:
-                with self._transcribing_lock:
-                    self._transcribing -= 1
+            text = self._transcribe_single(path)
+            if text:
+                with self._results_lock:
+                    self._results.append((start_ts, text.strip()))
+                self._write_transcript()
+            path.unlink(missing_ok=True)
 
     def _write_transcript(self) -> None:
         """Write all results to transcript file, sorted by start time."""
@@ -224,61 +197,47 @@ class OverlapAudioManager:
                 fh.write(" ".join(texts))
 
     def _stop_active_segments(self) -> None:
-        """Stop all active recording segments and queue their audio for transcription."""
+        """Stop active segments and queue their audio for transcription."""
         with self._lock:
-            active = list(self._active)
-            self._active.clear()  # Clear immediately so watchers don't double-queue
-        print(f"[Audio] Stopping {len(active)} active segment(s)")
+            active, self._active = list(self._active), []
         for seg in active:
             seg.stop_event.set()
             seg.join(timeout=3)
             if seg.file_path and seg.file_path.exists():
-                print(f"[Audio] Queuing segment: {seg.file_path}")
                 self._pending_queue.put((seg._started_at, seg.file_path))
-            else:
-                print(f"[Audio] Segment has no file (file_path={seg.file_path})")
+
+    def _shutdown(self, paused: bool = False) -> None:
+        """Internal: stop threads and wait for transcription."""
+        self._paused = paused
+        self._stop_all.set()
+        if self._scheduler:
+            self._scheduler.join(timeout=2)
+        self._stop_active_segments()
+        if self._transcriber_thread:
+            self._transcriber_thread.join(timeout=30)
+            self._transcriber_thread = None
 
     def pause(self) -> None:
-        if not self.running:
-            return
-        self._paused = True
-        self._stop_all.set()
-        if self._scheduler:
-            self._scheduler.join(timeout=2)
-        self._stop_active_segments()
-        # Wait for transcriber to finish current item
-        if self._transcriber_thread:
-            self._transcriber_thread.join(timeout=30)
-            self._transcriber_thread = None
+        if self.running:
+            self._shutdown(paused=True)
 
     def stop(self) -> None:
-        """Stop recording, wait for all transcriptions to complete."""
-        self._paused = False
-        self._stop_all.set()
-        if self._scheduler:
-            self._scheduler.join(timeout=2)
-        self._stop_active_segments()
-        # Wait for transcriber to finish processing and exit
-        if self._transcriber_thread:
-            self._transcriber_thread.join(timeout=30)
-            self._transcriber_thread = None
+        """Stop recording and wait for transcriptions."""
+        self._shutdown(paused=False)
 
     def cancel(self) -> None:
         """Cancel recording and discard all pending transcriptions."""
-        self._paused = False
         self._stop_all.set()
         if self._scheduler:
             self._scheduler.join(timeout=2)
-        # Stop segments without queuing
+        # Stop segments and delete their files
         with self._lock:
-            active = list(self._active)
+            active, self._active = list(self._active), []
         for seg in active:
             seg.stop_event.set()
             seg.join(timeout=2)
             if seg.file_path and seg.file_path.exists():
                 seg.file_path.unlink(missing_ok=True)
-        with self._lock:
-            self._active.clear()
         # Clear pending queue
         while not self._pending_queue.empty():
             try:
@@ -286,32 +245,26 @@ class OverlapAudioManager:
                 path.unlink(missing_ok=True)
             except queue.Empty:
                 break
-        # Stop transcriber thread
+        # Stop transcriber
         if self._transcriber_thread:
             self._transcriber_thread.join(timeout=5)
             self._transcriber_thread = None
-        # Clear results
         with self._results_lock:
             self._results.clear()
         self.clear_transcript()
+        self._paused = False
 
     def _transcribe_single(self, path: Path) -> str:
-        """Transcribe a single audio file with retries."""
-        retries = 0
-        while retries <= self.max_retries:
+        """Transcribe audio file with retries."""
+        for attempt in range(self.max_retries + 1):
             try:
-                text = self.llm.transcribe(str(path))
-                return text or ""
+                return self.llm.transcribe(str(path)) or ""
             except GroqRateLimitError:
-                retries += 1
-                if retries > self.max_retries:
-                    print("All Groq keys cooled down; segment skipped.")
+                if attempt == self.max_retries:
                     return ""
                 time.sleep(5)
-            except Exception as exc:
-                retries += 1
-                if retries > self.max_retries:
-                    print(f"Transcription failed: {exc}")
+            except Exception:
+                if attempt == self.max_retries:
                     return ""
                 time.sleep(1)
         return ""

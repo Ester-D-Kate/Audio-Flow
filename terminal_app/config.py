@@ -15,7 +15,6 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "height": 120,
     },
     "transcription": {
-        "workers": 2,
         "max_retries": 3,
     },
 }

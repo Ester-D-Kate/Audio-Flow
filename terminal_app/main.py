@@ -39,9 +39,7 @@ def main() -> None:
     hk_pause = cfg.get("hotkeys", {}).get("pause", "ctrl+shift+space")
     hk_cancel = cfg.get("hotkeys", {}).get("cancel", "ctrl+shift+esc")
     hk_prompt = cfg.get("hotkeys", {}).get("prompt", "ctrl+shift+alt+p")
-    workers = int(cfg.get("transcription", {}).get("workers", 2))
     max_retries = int(cfg.get("transcription", {}).get("max_retries", 3))
-    workers = max(2, min(5, workers))  # clamp between 2 and 5
 
     amplitude_queue: queue.Queue[float] = queue.Queue()
     transcript_path = Path(__file__).parent / "transcripts.log"
@@ -57,13 +55,12 @@ def main() -> None:
         llm=llm,
         transcript_path=transcript_path,
         amplitude_queue=amplitude_queue,
-        max_workers=workers,
         max_retries=max_retries,
     )
     visual = WaveformWindow(
         amplitude_queue,
-        width=int(cfg.get("ui", {}).get("width", 360)),
-        height=int(cfg.get("ui", {}).get("height", 140)),
+        width=int(cfg.get("ui", {}).get("width", 480)),
+        height=int(cfg.get("ui", {}).get("height", 200)),
     )
 
     status = {"recording": False, "paused": False, "last_formatted": "", "mode": "transcribe"}
@@ -170,18 +167,20 @@ def main() -> None:
             "resume": start_recording,
             "stop": stop_and_process,
             "cancel": cancel_all,
+            "prompt": lambda: start_recording("prompt"),
         }
     )
-    visual.start()
 
     print(
         f"Ready. {hk_start} start/resume (transcription), {hk_prompt} start/resume (prompt mode), {hk_pause} pause, {hk_stop} stop & send, {hk_cancel} cancel."
     )
+    
     try:
-        while True:
-            time.sleep(0.5)
+        visual.run()
     except KeyboardInterrupt:
-        print("Exiting...")
+        print("Exiting (KeyboardInterrupt)...")
+    finally:
+        print("Stopping recorder...")
         recorder.stop()
 
 

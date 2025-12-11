@@ -1,233 +1,326 @@
-import math
-import queue
+import sys
 import threading
-import tkinter as tk
+import queue
+import winsound
+import signal
 from typing import Callable, Dict, Optional
 
+from PyQt6.QtWidgets import (QApplication, QWidget, QHBoxLayout, 
+                             QPushButton, QFrame, QStackedWidget)
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QObject, QPoint
+from PyQt6.QtGui import QColor, QPainter, QBrush, QCursor
+
+class Communicator(QObject):
+    status_signal = pyqtSignal(str)
+    amplitude_signal = pyqtSignal(float)
+
+class ModernButton(QPushButton):
+    def __init__(self, text, color, hover_color, callback, size=36, font_size=16):
+        super().__init__(text)
+        self.setFixedSize(size, size)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.clicked.connect(callback)
+        self.default_color = color
+        self.hover_color = hover_color
+        self.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {color};
+                color: white;
+                border-radius: {size//2}px;
+                font-size: {font_size}px;
+                border: none;
+                font-family: Segoe UI Symbol;
+            }}
+            QPushButton:hover {{
+                background-color: {hover_color};
+            }}
+            QPushButton:pressed {{
+                background-color: {color};
+            }}
+        """)
+
+    def update_color(self, color, hover_color):
+        self.default_color = color
+        self.hover_color = hover_color
+        self.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {color};
+                color: white;
+                border-radius: {self.width()//2}px;
+                font-size: 16px;
+                border: none;
+                font-family: Segoe UI Symbol;
+            }}
+            QPushButton:hover {{
+                background-color: {hover_color};
+            }}
+            QPushButton:pressed {{
+                background-color: {color};
+            }}
+        """)
+
+class WaveformWidget(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.setFixedSize(100, 40)
+        self.amplitudes = [0.0] * 30
+        self.mode = "transcribe" # or prompt
+
+    def update_data(self, amp):
+        self.amplitudes.pop(0)
+        self.amplitudes.append(amp)
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        
+        bar_width = self.width() / len(self.amplitudes)
+        center_y = self.height() / 2
+        
+        # Color based on mode
+        base_color = QColor("#3B82F6") if self.mode == "transcribe" else QColor("#A855F7")
+        
+        for i, amp in enumerate(self.amplitudes):
+            # Calculate height
+            h = max(4, amp * self.height())
+            x = i * bar_width
+            y = center_y - (h / 2)
+            
+            # Opacity based on amplitude
+            color = QColor(base_color)
+            color.setAlpha(int(150 + min(amp, 1.0) * 105))
+            
+            painter.setBrush(QBrush(color))
+            painter.setPen(Qt.PenStyle.NoPen)
+            
+            # Draw rounded rect
+            painter.drawRoundedRect(int(x), int(y), int(bar_width - 2), int(h), 2, 2)
+
+class MainWindow(QWidget):
+    def __init__(self, callbacks, communicator):
+        super().__init__()
+        self.callbacks = callbacks
+        self.comm = communicator
+        self.is_paused = False
+        
+        # Window setup
+        self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.Tool)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        
+        # Layout
+        self.layout = QHBoxLayout(self)
+        self.layout.setContentsMargins(0, 0, 0, 0)
+        
+        # Main container (pill shape)
+        self.container = QFrame()
+        self.container.setStyleSheet("""
+            QFrame {
+                background-color: rgba(20, 20, 20, 245);
+                border-radius: 25px;
+                border: 1px solid rgba(255, 255, 255, 20);
+            }
+        """)
+        # Start with idle size
+        self.container.setFixedSize(130, 50)
+        self.setFixedSize(130, 50)
+        
+        self.container_layout = QHBoxLayout(self.container)
+        self.container_layout.setContentsMargins(10, 5, 10, 5)
+        self.container_layout.setSpacing(10)
+        
+        self.layout.addWidget(self.container)
+        
+        # Stack for modes
+        self.stack = QStackedWidget()
+        self.container_layout.addWidget(self.stack)
+        
+        # --- Idle Page ---
+        self.idle_widget = QWidget()
+        idle_layout = QHBoxLayout(self.idle_widget)
+        idle_layout.setContentsMargins(0, 0, 0, 0)
+        idle_layout.setSpacing(15)
+        idle_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        
+        self.btn_transcribe = ModernButton("🎤", "#3B82F6", "#2563EB", self.on_transcribe, size=36, font_size=18)
+        self.btn_prompt = ModernButton("✨", "#A855F7", "#9333EA", self.on_prompt, size=36, font_size=18)
+        
+        idle_layout.addWidget(self.btn_transcribe)
+        idle_layout.addWidget(self.btn_prompt)
+        
+        self.stack.addWidget(self.idle_widget)
+        
+        # --- Recording Page ---
+        self.rec_widget = QWidget()
+        rec_layout = QHBoxLayout(self.rec_widget)
+        rec_layout.setContentsMargins(0, 0, 0, 0)
+        rec_layout.setSpacing(8)
+        
+        self.waveform = WaveformWidget()
+        
+        self.btn_send = ModernButton("📤", "#38BDF8", "#0EA5E9", self.on_send, size=32, font_size=16)
+        self.btn_pause = ModernButton("⏸", "#71717a", "#52525b", self.on_pause, size=32, font_size=16)
+        self.btn_cancel = ModernButton("✖", "#ef4444", "#dc2626", self.on_cancel, size=32, font_size=16)
+        
+        rec_layout.addWidget(self.waveform)
+        rec_layout.addWidget(self.btn_send)
+        rec_layout.addWidget(self.btn_pause)
+        rec_layout.addWidget(self.btn_cancel)
+        
+        self.stack.addWidget(self.rec_widget)
+        
+        # Connect signals
+        self.comm.status_signal.connect(self.handle_status)
+        self.comm.amplitude_signal.connect(self.waveform.update_data)
+        
+        # Dragging logic
+        self.old_pos = None
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.old_pos = event.globalPosition().toPoint()
+
+    def mouseMoveEvent(self, event):
+        if self.old_pos:
+            delta = event.globalPosition().toPoint() - self.old_pos
+            self.move(self.pos() + delta)
+            self.old_pos = event.globalPosition().toPoint()
+
+    def mouseReleaseEvent(self, event):
+        self.old_pos = None
+
+    def play_sound(self):
+        try:
+            threading.Thread(target=lambda: winsound.Beep(800, 50), daemon=True).start()
+        except:
+            pass
+
+    def transition_to(self, mode):
+        current_geometry = self.geometry()
+        center_point = current_geometry.center()
+        
+        if mode == "idle":
+            new_width = 130
+            self.stack.setCurrentIndex(0)
+        else:
+            new_width = 270
+            self.stack.setCurrentIndex(1)
+            
+        self.container.setFixedSize(new_width, 50)
+        self.setFixedSize(new_width, 50)
+        
+        # Re-center horizontally, keep vertical position
+        new_x = center_point.x() - (new_width // 2)
+        self.move(new_x, current_geometry.y())
+
+    def on_transcribe(self):
+        self.play_sound()
+        self.callbacks.get("start", lambda: None)()
+        self.waveform.mode = "transcribe"
+        self.transition_to("recording")
+        self.update_send_button_color()
+
+    def on_prompt(self):
+        self.play_sound()
+        self.callbacks.get("prompt", lambda: None)()
+        self.waveform.mode = "prompt"
+        self.transition_to("recording")
+        self.update_send_button_color()
+
+    def update_send_button_color(self):
+        if self.waveform.mode == "prompt":
+            self.btn_send.update_color("#9b59b6", "#8e44ad")
+        else:
+            self.btn_send.update_color("#87CEEB", "#5dade2")
+
+    def on_send(self):
+        self.play_sound()
+        self.callbacks.get("stop", lambda: None)()
+        self.transition_to("idle")
+
+    def on_pause(self):
+        self.play_sound()
+        if self.is_paused:
+             self.callbacks.get("resume", lambda: None)()
+        else:
+             self.callbacks.get("pause", lambda: None)()
+
+    def on_cancel(self):
+        self.play_sound()
+        self.callbacks.get("cancel", lambda: None)()
+        self.transition_to("idle")
+
+    def handle_status(self, text):
+        if "recording" in text:
+            self.transition_to("recording")
+            if "prompt" in text:
+                self.waveform.mode = "prompt"
+            else:
+                self.waveform.mode = "transcribe"
+            self.update_send_button_color()
+            
+            self.is_paused = False
+            self.btn_pause.setText("⏸")
+            self.btn_pause.update_color("#7f8c8d", "#95a5a6")
+            
+        elif "paused" in text:
+            self.is_paused = True
+            self.btn_pause.setText("▶")
+            self.btn_pause.update_color("#3498db", "#2980b9")
+            
+        elif "idle" in text:
+            self.transition_to("idle")
+            self.is_paused = False
 
 class WaveformWindow:
-    def __init__(
-        self,
-        amplitude_queue: "queue.Queue[float]",
-        width: int = 360,
-        height: int = 180,
-        callbacks: Optional[Dict[str, Callable[[], None]]] = None,
-    ) -> None:
+    def __init__(self, amplitude_queue, width=420, height=175, callbacks=None):
         self.queue = amplitude_queue
-        self.width = width
-        self.height = height
         self.callbacks = callbacks or {}
-        self._running = False
-        self._thread: threading.Thread | None = None
-        self.root: tk.Tk | None = None
-        self._status = "idle"
-        self._status_lock = threading.Lock()
-        self._buttons: Dict[str, tk.Button] = {}
-        self._phase = 0.0
-
-    def start(self) -> None:
-        if self._running:
-            return
-        self._running = True
-        self._thread = threading.Thread(target=self._run, daemon=True)
-        self._thread.start()
+        self.comm = Communicator()
+        self.app = None
+        self.window = None
 
     def update_status(self, text: str) -> None:
-        with self._status_lock:
-            self._status = text
-        mode_key = text.split(" ")[0] if text else "idle"
-        if hasattr(self, "status_label"):
-            self._set_mode_colors(mode_key)
+        self.comm.status_signal.emit(text)
 
-    def _run(self) -> None:
-        self.root = tk.Tk()
-        self.root.title("Audio Visual")
-        self.root.geometry(f"{self.width}x{self.height}+40+40")
-        self.root.attributes("-topmost", True)
-        self.root.configure(bg="#050910")
-        self.root.overrideredirect(True)
+    def run(self):
+        # Create QApplication if it doesn't exist
+        app = QApplication.instance()
+        if not app:
+            app = QApplication(sys.argv)
+        self.app = app
+        
+        self.window = MainWindow(self.callbacks, self.comm)
+        
+        # Center on screen initially
+        screen_geometry = self.app.primaryScreen().geometry()
+        x = (screen_geometry.width() - self.window.width()) // 2
+        y = (screen_geometry.height() - self.window.height()) // 2
+        self.window.move(x, y)
+        
+        self.window.show()
+        
+        # Timer for amplitude processing
+        timer = QTimer()
+        timer.timeout.connect(self._process_queue)
+        timer.start(30) # 30ms update rate
+        
+        # Handle Ctrl+C gracefully
+        signal.signal(signal.SIGINT, lambda *args: self.app.quit())
+        
+        # Timer to allow Python to process signals
+        ctrl_c_timer = QTimer()
+        ctrl_c_timer.timeout.connect(lambda: None)
+        ctrl_c_timer.start(100)
+        
+        self.app.exec()
 
-        shell = tk.Frame(self.root, bg="#050910", padx=8, pady=8)
-        shell.pack(fill=tk.BOTH, expand=True)
+    def _process_queue(self):
+        try:
+            while not self.queue.empty():
+                amp = self.queue.get_nowait()
+                self.comm.amplitude_signal.emit(float(amp))
+        except:
+            pass
 
-        chrome = tk.Frame(shell, bg="#0c1624", highlightthickness=0, bd=0)
-        chrome.pack(fill=tk.BOTH, expand=True)
-        chrome.pack_propagate(False)
 
-        # Header / controls
-        header = tk.Frame(chrome, bg="#0c1624", padx=12, pady=10)
-        header.pack(fill=tk.X)
-        title = tk.Label(
-            header,
-            text="Audio-Typewriter",
-            fg="#e9f0ff",
-            bg="#0c1624",
-            font=("Segoe UI", 12, "bold"),
-        )
-        title.pack(side=tk.LEFT)
-
-        # Icon-style buttons with hover/active feedback
-        pill = {"bd": 0, "highlightthickness": 0}
-        controls = tk.Frame(chrome, bg="#0c1624", padx=10, pady=8, **pill)
-        controls.pack(fill=tk.X)
-        noop = lambda: None
-        self._buttons["start"] = self._make_icon_button(controls, "⏺", self.callbacks.get("start", noop))
-        self._buttons["pause"] = self._make_icon_button(controls, "⏸", self.callbacks.get("pause", noop))
-        self._buttons["resume"] = self._make_icon_button(controls, "▶", self.callbacks.get("resume", noop))
-        self._buttons["stop"] = self._make_icon_button(controls, "⏹", self.callbacks.get("stop", noop))
-        self._buttons["cancel"] = self._make_icon_button(controls, "✖", self.callbacks.get("cancel", noop))
-
-        status_frame = tk.Frame(chrome, bg="#0c1624")
-        status_frame.pack(fill=tk.X, padx=12, pady=(2, 6))
-        self.status_label = tk.Label(
-            status_frame,
-            text="idle",
-            fg="#c8d6e8",
-            bg="#122033",
-            anchor="w",
-            padx=10,
-            pady=6,
-            font=("Segoe UI", 10, "bold"),
-        )
-        self.status_label.pack(fill=tk.X)
-
-        self.canvas = tk.Canvas(chrome, width=self.width, height=self.height - 90, bg="#0c1624", highlightthickness=0)
-        self.canvas.pack(fill=tk.BOTH, expand=True, padx=10, pady=(4, 10))
-
-        self._enable_drag()
-        self._tick()
-        self.root.mainloop()
-
-    def _make_icon_button(self, parent: tk.Widget, text: str, command: Callable[[], None]) -> tk.Button:
-        base = {
-            "bg": "#122033",
-            "fg": "#e9f0ff",
-            "activebackground": "#1b2d44",
-            "activeforeground": "#e9f0ff",
-            "bd": 0,
-            "padx": 12,
-            "pady": 12,
-            "font": ("Segoe UI Symbol", 12, "bold"),
-            "relief": tk.FLAT,
-            "highlightthickness": 0,
-        }
-
-        btn = tk.Button(parent, text=text, command=command, **base)
-        btn.pack(side=tk.LEFT, padx=4)
-
-        def on_enter(_):
-            btn.configure(bg="#1b2d44")
-
-        def on_leave(_):
-            btn.configure(bg="#122033")
-
-        btn.bind("<Enter>", on_enter)
-        btn.bind("<Leave>", on_leave)
-        return btn
-
-    def _enable_drag(self) -> None:
-        assert self.root
-        self._drag_data: dict[str, int] = {"x": 0, "y": 0}
-
-        def start(event: tk.Event) -> None:
-            self._drag_data["x"] = event.x
-            self._drag_data["y"] = event.y
-
-        def drag(event: tk.Event) -> None:
-            x = event.x_root - self._drag_data["x"]
-            y = event.y_root - self._drag_data["y"]
-            self.root.geometry(f"+{x}+{y}")
-
-        self.root.bind("<ButtonPress-1>", start)
-        self.root.bind("<B1-Motion>", drag)
-
-    def _mix_color(self, c1: str, c2: str, t: float) -> str:
-        t = max(0.0, min(1.0, t))
-        def to_rgb(hex_color: str) -> tuple[int, int, int]:
-            return tuple(int(hex_color[i : i + 2], 16) for i in (1, 3, 5))
-
-        def to_hex(rgb: tuple[int, int, int]) -> str:
-            return "#" + "".join(f"{min(255, max(0, v)):02x}" for v in rgb)
-
-        a = to_rgb(c1)
-        b = to_rgb(c2)
-        mixed = tuple(int(a[i] + (b[i] - a[i]) * t) for i in range(3))
-        return to_hex(mixed)
-
-    def _draw_background(self, pulse: float) -> None:
-        if not hasattr(self, "canvas"):
-            return
-        base = self._mix_color("#0b1420", "#0f1d30", 0.35 + 0.25 * pulse)
-        glow_x = (self._phase * 90) % (self.width + 140) - 140
-        self.canvas.create_rectangle(0, 0, self.width, self.height, fill=base, outline="")
-        self.canvas.create_rectangle(glow_x, 0, glow_x + 140, self.height, fill="#1a2f46", outline="")
-
-    def _tick(self) -> None:
-        if not self.root:
-            return
-        amplitudes = []
-        while not self.queue.empty():
-            try:
-                amplitudes.append(float(self.queue.get_nowait()))
-            except queue.Empty:
-                break
-        level = max(amplitudes) if amplitudes else 0.0
-        self._draw(level)
-        with self._status_lock:
-            current_status = self._status
-        if hasattr(self, "status_label"):
-            self.status_label.config(text=current_status)
-        self.root.after(50, self._tick)
-
-    def _draw(self, level: float) -> None:
-        if not hasattr(self, "canvas"):
-            return
-        self.canvas.delete("all")
-        self._phase = (self._phase + 0.14) % (2 * math.pi)
-        level = max(0.0, min(level, 1.0))
-        pulse = 0.55 + 0.45 * math.sin(self._phase)
-        baseline = 0.08
-        effective = max(level, baseline)
-        bar_count = 28
-        bar_width = self.width / bar_count
-
-        self._draw_background(pulse)
-
-        for i in range(bar_count):
-            scale = effective * (0.35 + 0.65 * (i / bar_count))
-            h = scale * (self.height - 90)
-            x0 = i * bar_width + 3
-            y0 = (self.height - 90) - h
-            x1 = x0 + bar_width - 6
-            y1 = (self.height - 90) - 4
-            shade = 0.55 + 0.45 * math.sin(self._phase + i * 0.35)
-            color = self._mix_color("#3aa0ff", "#7ae1ff", shade)
-            self.canvas.create_rectangle(x0, y0, x1, y1, fill=color, outline="")
-
-    def _set_mode_colors(self, mode: str) -> None:
-        palette = {
-            "idle": ("#c8d6e8", "#122033"),
-            "recording": ("#ffd166", "#2d1f0f"),
-            "paused": ("#8cd3ff", "#102235"),
-            "processing": ("#7ae1ff", "#0f1d2d"),
-        }
-        fg, bg = palette.get(mode, ("#9fb3c8", "#1b222d"))
-        self.status_label.configure(fg=fg, bg=bg)
-
-        def tint(btn: Optional[tk.Button], active_color: str) -> None:
-            if not btn:
-                return
-            btn.configure(bg=active_color)
-
-        # reset all
-        for btn in self._buttons.values():
-            btn.configure(bg="#1b222d")
-
-        if mode.startswith("recording"):
-            tint(self._buttons.get("start"), "#3b1f24")
-        elif mode == "paused":
-            tint(self._buttons.get("pause"), "#2f2a1d")
-        elif mode == "processing":
-            tint(self._buttons.get("stop"), "#1f2e36")
-        else:
-            tint(self._buttons.get("cancel"), "#1b222d")

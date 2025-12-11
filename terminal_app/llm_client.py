@@ -23,7 +23,6 @@ class KeyManager:
         ]
         if not self.keys:
             raise RuntimeError("No GROQ_API_KEY* env vars found")
-        print(f"[KeyManager] Loaded {len(self.keys)} API keys")
         self.cooldown_seconds = cooldown_seconds
         self.cooldown_until: dict[str, float] = {}
         self.lock = threading.Lock()
@@ -60,35 +59,20 @@ class GroqLLM:
         self.key_manager = KeyManager(cooldown_seconds=cooldown_seconds)
 
     def _with_key(self, fn: Callable[[Groq], str]) -> str:
+        """Execute fn with key rotation on failure."""
         errors: List[str] = []
-        tried = 0
-        max_tries = len(self.key_manager.keys)
-        while tried < max_tries:
+        for _ in range(len(self.key_manager.keys)):
             key = self.key_manager.next_key()
             if not key:
-                print(f"[KeyManager] No available keys (all cooling down)")
                 break
-            key_preview = key[:8] + "..."
-            client = Groq(api_key=key)
             try:
-                result = fn(client)
-                print(f"[KeyManager] Success with key {key_preview}")
-                return result
-            except Exception as exc:  # Broad catch to rotate keys on failures
+                return fn(Groq(api_key=key))
+            except Exception as exc:
                 msg = str(exc).lower()
-                if any(token in msg for token in RATE_LIMIT_TOKENS):
+                if any(tok in msg for tok in RATE_LIMIT_TOKENS):
                     self.key_manager.backoff(key)
-                    print(f"[KeyManager] Key {key_preview} rate-limited, cooling down 5min")
-                    errors.append(f"{key[:5]}*** rate-limited; cooling down")
-                    tried += 1
-                    continue
-                print(f"[KeyManager] Key {key_preview} failed: {exc}")
-                errors.append(f"{key[:5]}*** failed: {exc}")
-                tried += 1
-                continue
-        raise GroqRateLimitError(
-            "All Groq keys failed or are cooling down: " + "; ".join(errors)
-        )
+                errors.append(str(exc)[:60])
+        raise GroqRateLimitError(f"All keys exhausted: {'; '.join(errors)[:200]}")
 
     def transcribe(self, audio_path: str, language: str = "en") -> str:
         def _call(client: Groq) -> str:
