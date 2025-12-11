@@ -3,6 +3,11 @@ import threading
 import queue
 import winsound
 import signal
+import time
+import struct
+import math
+import os
+import tempfile
 from typing import Callable, Dict, Optional
 
 from PyQt6.QtWidgets import (QApplication, QWidget, QHBoxLayout, 
@@ -13,6 +18,57 @@ from PyQt6.QtGui import QColor, QPainter, QBrush, QCursor
 class Communicator(QObject):
     status_signal = pyqtSignal(str)
     amplitude_signal = pyqtSignal(float)
+
+class SoundEngine:
+    def __init__(self):
+        self.sounds = {}
+        self.temp_dir = tempfile.mkdtemp()
+        self._init_sounds()
+
+    def _generate_tone(self, freq, duration_ms, volume=0.3):
+        sample_rate = 44100
+        n_samples = int(sample_rate * duration_ms / 1000)
+        data = bytearray()
+        for i in range(n_samples):
+            t = float(i) / sample_rate
+            val = int(128 + 127 * volume * math.sin(2 * math.pi * freq * t))
+            data.append(val)
+        return data
+
+    def _create_wav(self, pcm_data):
+        sample_rate = 44100
+        # WAV Header for 8-bit mono 44.1kHz
+        header = struct.pack('<4sI4s4sIHHIIHH4sI', 
+            b'RIFF', 36 + len(pcm_data), b'WAVE', b'fmt ', 16, 1, 1, sample_rate, sample_rate, 1, 8, b'data', len(pcm_data))
+        return header + pcm_data
+
+    def _save_wav(self, name, data):
+        path = os.path.join(self.temp_dir, f"{name}.wav")
+        with open(path, "wb") as f:
+            f.write(data)
+        return path
+
+    def _init_sounds(self):
+        # Standard beeps
+        self.sounds['start'] = self._save_wav('start', self._create_wav(self._generate_tone(1000, 150)))
+        self.sounds['stop'] = self._save_wav('stop', self._create_wav(self._generate_tone(800, 150)))
+        self.sounds['pause'] = self._save_wav('pause', self._create_wav(self._generate_tone(600, 100)))
+        self.sounds['resume'] = self._save_wav('resume', self._create_wav(self._generate_tone(1000, 100)))
+        self.sounds['cancel'] = self._save_wav('cancel', self._create_wav(self._generate_tone(400, 200)))
+        
+        # Ting-tong (High -> Low)
+        part1 = self._generate_tone(1200, 80)
+        silence = bytearray([128] * int(44100 * 0.05))
+        part2 = self._generate_tone(800, 120)
+        self.sounds['ting_tong'] = self._save_wav('ting_tong', self._create_wav(part1 + silence + part2))
+
+    def play(self, name):
+        if name in self.sounds:
+            # SND_ASYNC: return immediately
+            # SND_FILENAME: play from file
+            # SND_NODEFAULT: don't play system default if sound not found
+            flags = winsound.SND_FILENAME | winsound.SND_ASYNC | winsound.SND_NODEFAULT
+            winsound.PlaySound(self.sounds[name], flags)
 
 class ModernButton(QPushButton):
     def __init__(self, text, color, hover_color, callback, size=36, font_size=16):
@@ -103,6 +159,7 @@ class MainWindow(QWidget):
         self.callbacks = callbacks
         self.comm = communicator
         self.is_paused = False
+        self.sound_engine = SoundEngine()
         
         # Window setup
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.Tool)
@@ -122,8 +179,8 @@ class MainWindow(QWidget):
             }
         """)
         # Start with idle size
-        self.container.setFixedSize(130, 50)
-        self.setFixedSize(130, 50)
+        self.container.setFixedSize(180, 50)
+        self.setFixedSize(180, 50)
         
         self.container_layout = QHBoxLayout(self.container)
         self.container_layout.setContentsMargins(10, 5, 10, 5)
@@ -144,9 +201,11 @@ class MainWindow(QWidget):
         
         self.btn_transcribe = ModernButton("🎤", "#3B82F6", "#2563EB", self.on_transcribe, size=36, font_size=18)
         self.btn_prompt = ModernButton("✨", "#A855F7", "#9333EA", self.on_prompt, size=36, font_size=18)
+        self.btn_quit = ModernButton("⏻", "#ef4444", "#dc2626", self.on_quit, size=36, font_size=18)
         
         idle_layout.addWidget(self.btn_transcribe)
         idle_layout.addWidget(self.btn_prompt)
+        idle_layout.addWidget(self.btn_quit)
         
         self.stack.addWidget(self.idle_widget)
         
@@ -189,18 +248,15 @@ class MainWindow(QWidget):
     def mouseReleaseEvent(self, event):
         self.old_pos = None
 
-    def play_sound(self):
-        try:
-            threading.Thread(target=lambda: winsound.Beep(800, 50), daemon=True).start()
-        except:
-            pass
+    def play_sound(self, name):
+        self.sound_engine.play(name)
 
     def transition_to(self, mode):
         current_geometry = self.geometry()
         center_point = current_geometry.center()
         
         if mode == "idle":
-            new_width = 130
+            new_width = 180
             self.stack.setCurrentIndex(0)
         else:
             new_width = 270
@@ -213,15 +269,19 @@ class MainWindow(QWidget):
         new_x = center_point.x() - (new_width // 2)
         self.move(new_x, current_geometry.y())
 
+    def on_quit(self):
+        self.play_sound('cancel')
+        QApplication.quit()
+
     def on_transcribe(self):
-        self.play_sound()
+        self.play_sound('start')
         self.callbacks.get("start", lambda: None)()
         self.waveform.mode = "transcribe"
         self.transition_to("recording")
         self.update_send_button_color()
 
     def on_prompt(self):
-        self.play_sound()
+        self.play_sound('start')
         self.callbacks.get("prompt", lambda: None)()
         self.waveform.mode = "prompt"
         self.transition_to("recording")
@@ -234,24 +294,26 @@ class MainWindow(QWidget):
             self.btn_send.update_color("#87CEEB", "#5dade2")
 
     def on_send(self):
-        self.play_sound()
+        self.play_sound('stop')
         self.callbacks.get("stop", lambda: None)()
         self.transition_to("idle")
 
     def on_pause(self):
-        self.play_sound()
         if self.is_paused:
+             self.play_sound('resume')
              self.callbacks.get("resume", lambda: None)()
         else:
+             self.play_sound('pause')
              self.callbacks.get("pause", lambda: None)()
 
     def on_cancel(self):
-        self.play_sound()
+        self.play_sound('cancel')
         self.callbacks.get("cancel", lambda: None)()
         self.transition_to("idle")
 
     def handle_status(self, text):
         if "recording" in text:
+            self.play_sound('start')
             self.transition_to("recording")
             if "prompt" in text:
                 self.waveform.mode = "prompt"
@@ -264,16 +326,21 @@ class MainWindow(QWidget):
             self.btn_pause.update_color("#7f8c8d", "#95a5a6")
             
         elif "paused" in text:
+            self.play_sound('pause')
             self.is_paused = True
             self.btn_pause.setText("▶")
             self.btn_pause.update_color("#3498db", "#2980b9")
             
+        elif "processing" in text:
+            self.play_sound('ting_tong')
+
         elif "idle" in text:
+            self.play_sound('stop')
             self.transition_to("idle")
             self.is_paused = False
 
 class WaveformWindow:
-    def __init__(self, amplitude_queue, width=420, height=175, callbacks=None):
+    def __init__(self, amplitude_queue, callbacks=None):
         self.queue = amplitude_queue
         self.callbacks = callbacks or {}
         self.comm = Communicator()

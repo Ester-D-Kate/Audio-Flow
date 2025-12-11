@@ -1,17 +1,9 @@
 {
   "hotkeys": {
-    "start": "alt+c",
-    "stop": "alt+v",
-    "pause": "alt+space",
-    "cancel": "alt+esc",
-    "prompt": "alt+z"
-  },
-  "transcription": {
-    "workers": 2,
-    "max_retries": 3
-  },
-  "ui": {
-    "width": 360,
-    "height": 140
+    "start": "alt+L",
+    "stop": "alt+x",
+    "pause": "ctrl+space",
+    "cancel": "shift+esc",
+    "prompt": "alt+p"
   }
 }

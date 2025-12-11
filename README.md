@@ -1,72 +1,125 @@
-# Audio-Typewriter
+# Audio Flow
 
-A hotkey-driven, always-on-top mini audio recorder that streams overlapping mic segments to Groq Whisper, formats the resulting text via Groq chat, and pastes the cleaned prompt at your current cursor. Includes a draggable waveform mini-window for visual feedback.
+A modern, hotkey-driven audio typewriter that sits quietly on your screen. It records your voice, transcribes it using Groq Whisper, formats it into perfect text (or generates content from your instructions), and types it directly where your cursor is.
 
-## Features
-- Global hotkeys (no window focus needed): `Ctrl+Shift+L` start recording (transcribe/format), `Ctrl+Shift+Alt+P` start recording in prompt mode (speak a task, it drafts it), `Ctrl+Shift+S` stop + process + paste.
-- Overlapping audio capture: new 15s segment every 12s to avoid gaps; each segment transcribed immediately to reduce latency and appended to a rolling log until you stop.
-- Groq key rotation: up to 5+ keys picked from env vars beginning with `GROQ_API_KEY`; rate-limited keys are cooled down for 5 minutes before reuse.
-- Whisper transcription (Groq `whisper-large-v3-turbo`) and chat formatting (`llama-3.3-70b-versatile`) to clean grammar, structure, and clarity while preserving meaning.
-- Cursor injection via clipboard + paste (pyautogui/pyperclip) so output appears at the active cursor location.
-- Tiny draggable Tk waveform with Start/Pause/Resume/Stop buttons; stays on top even when the app is not focused.
+![Audio Flow UI](https://via.placeholder.com/600x100?text=Audio+Flow+Interface)
 
-## Setup
-1) Python 3.10+ recommended. Create/activate a venv.
-2) Install deps:
-   ```bash
-   pip install groq sounddevice soundfile numpy keyboard python-dotenv pyautogui pyperclip
-   ```
-   - Windows: `keyboard` global hotkeys may require admin privileges. Ensure PortAudio-compatible mic input for `sounddevice`.
-3) Environment: create `.env` in repo root (or set system env vars). Keys are discovered if their names start with `GROQ_API_KEY`:
-   ```env
-   GROQ_API_KEY=your_primary_key
-   GROQ_API_KEY_ALT_1=your_alt_key
-   GROQ_API_KEY_ALT_2=...
-   GROQ_API_KEY_ALT_3=...
-   GROQ_API_KEY_ALT_4=...
-   ```
-   Additional keys with the same prefix are picked up automatically.
+## 🚀 Getting Started
 
-4) Hotkeys / UI config: edit `config.json` (auto-created default values are baked-in). Example:
+**For most users (No coding required):**
+
+1. **Download**: Get `Audio Flow.exe` from the [Releases](../../releases) page.
+2. **Create Folder**: Make a new folder (e.g., `Audio Flow`) and move the `.exe` into it.
+3. **Setup Keys**: Create a `.env` file in that folder. Add your API keys as shown in `.env.example` (e.g., `GROQ_API_KEY=...`).
+4. **Setup Config (Optional)**: Create a `config.json` file in the same folder to customize hotkeys.
+5. **Run**: Double-click `Audio Flow.exe`. It will automatically load your settings from the folder.
+
+## ✨ Features
+
+- **Two Powerful Modes**:
+  - **🎤 Transcribe Mode**: Speak naturally, and it types out clean, punctuated text.
+  - **✨ Prompt Mode**: Give instructions (e.g., "Write a polite email declining this offer"), and it generates the content for you.
+- **Always-on-Top UI**: A sleek, minimal bar that floats over your work.
+- **Global Hotkeys**: Control everything without leaving your current window.
+- **Smart Audio**: Uses overlapping segments to ensure not a single word is lost.
+- **Multi-Key Support**: Automatically rotates through multiple Groq API keys to handle rate limits.
+
+## 🎮 How to Use
+
+### The Interface
+The app starts as a small pill-shaped bar.
+- **🎤 (Blue)**: Start Transcription Mode.
+- **✨ (Purple)**: Start Prompt Generation Mode.
+
+Once recording, the bar expands to show:
+- **Waveform**: Visual feedback of your voice.
+- **📤 (Send)**: Stop recording, process, and type the result.
+- **⏸ (Pause)**: Pause/Resume recording.
+- **✖ (Cancel)**: Discard the current recording.
+
+### Hotkeys
+| Action | Default Hotkey | Description |
+| :--- | :--- | :--- |
+| **Start Transcribe** | `Ctrl` + `Shift` + `L` | Start recording for direct transcription. |
+| **Start Prompt** | `Ctrl` + `Shift` + `Alt` + `P` | Start recording instructions for AI generation. |
+| **Stop & Send** | `Ctrl` + `Alt` + `S` | Finish recording and paste the result. |
+| **Pause/Resume** | `Ctrl` + `Shift` + `Space` | Pause the recording temporarily. |
+| **Cancel** | `Ctrl` + `Shift` + `Esc` | Cancel and discard everything. |
+
+*(You can customize these by creating a `config.json` file)*
+
+## 🛠️ Configuration (Optional)
+
+To change hotkeys, create a `config.json` file next to the executable:
+
 ```json
 {
-   "hotkeys": {
-      "start": "ctrl+shift+l",
-      "stop": "ctrl+alt+s",
-      "pause": "ctrl+shift+space",
-      "cancel": "ctrl+shift+esc",
-      "prompt": "ctrl+shift+alt+p"
-   },
-   "transcription": {"workers": 2, "max_retries": 3},
-   "ui": {"width": 360, "height": 140}
+  "hotkeys": {
+    "start": "alt+L",
+    "stop": "alt+x",
+    "pause": "ctrl+space",
+    "cancel": "alt+esc",
+    "prompt": "alt+p"
+  }
 }
 ```
 
-## Running
-From repo root:
+## 👨‍💻 Development & Building (DAB)
+
+If you want to modify the code or build your own executable, follow these steps.
+
+### Prerequisites
+- Python 3.10+
+- Install dependencies: `pip install -r requirements.txt`
+
+### 🛡️ Secure Build (Recommended)
+*This method keeps your API keys and configuration separate from the executable. It ensures your `.exe` is clean, safe to share, and allows you to change settings without recompiling.*
+
+1. **Compile**:
+   Run this command to build the executable (it will NOT bundle your secrets):
+   ```bash
+   pyinstaller --noconsole --onefile --name "Audio Flow" terminal_app/main.py
+   ```
+
+2. **Deploy**:
+   - Create a folder (e.g., `Audio Flow`).
+   - Move the generated `Audio Flow.exe` (from `dist/`) into it.
+   - **Important**: Copy your `.env` and `config.json` files into this same folder.
+
+3. **Run**:
+   Launch `Audio Flow.exe`. It will automatically load the environment variables and config from the files in its folder.
+
+### 📦 Bundled Keys (Semi-Secure)
+*Includes `.env` (API keys) inside the executable, but keeps `config.json` external. This allows you to change hotkeys without recompiling, while having your keys built-in.*
+
+**⚠️ Warning: This is NOT secure to share publicly. Your API keys can be extracted from the executable.**
+
+1. **Compile**:
+   ```bash
+   pyinstaller --noconsole --onefile --name "Audio Flow" --add-data ".env;." terminal_app/main.py
+   ```
+
+2. **Deploy**:
+   - Create a folder.
+   - Move `Audio Flow.exe` into it.
+   - Create/Copy a `config.json` file into the same folder to customize hotkeys.
+
+### ⚠️ Fully Bundled (Non-Secure)
+*Includes BOTH `config.json` and `.env` (API keys) inside the executable. Use this ONLY for personal convenience on your own machine. NEVER share this executable.*
 ```bash
-python -m terminal_app.main
+pyinstaller --noconsole --onefile --name "Audio Flow" --add-data "config.json;." --add-data ".env;." terminal_app/main.py
 ```
-You’ll see the waveform window appear with Start/Pause/Resume/Stop buttons; hotkeys work globally.
+*(Note: On Mac/Linux, use `:` instead of `;` separator)*
 
-## How it works
-- `main.py`: wires hotkeys/UI, lifecycle, and orchestrates record → transcribe → format → paste.
-- `audio.py`: manages overlapping `RecordingSegment` threads (15s max, spawned every 12s). Each segment writes a temp WAV, runs Groq Whisper, and appends text to `transcripts.log`. Manual stop ends all segments and transcribes what’s recorded; pause halts scheduling without clearing the log.
-- `llm_client.py`: round-robin key selection across all `GROQ_API_KEY*` env vars. On rate-limit-like errors (429/“limit” etc.), the key is cooled down for 5 minutes. Provides `transcribe()`, `format_text()`, and `generate_prompt()` wrappers.
-- `inserter.py`: copies formatted text to clipboard and pastes at the active cursor (pyautogui), with a fallback to typing if desired.
-- `ui.py`: draggable always-on-top Tk canvas showing bar-style RMS levels, plus Start/Pause/Resume/Stop buttons.
-- `config.py`: loads `config.json` or defaults for hotkeys and UI sizing.
+## 🏗️ Architecture
 
-## Hotkey flow
-1) Start (`Ctrl+Shift+L` by default or UI Start): clear previous transcript, start overlapping capture.
-2) Pause (`Ctrl+Shift+Space` or UI Pause): halt new segments; resume with Start/Resume.
-3) Stop + Send (`Ctrl+Shift+S` or UI Stop + Send): stop all segments, transcribe in-flight audio, combine transcript, send to Groq chat for formatting (or prompt drafting if you started with `Ctrl+Shift+Alt+P`), copy to clipboard, and paste at the cursor.
-4) Cancel (`Ctrl+Shift+Esc` or UI Cancel): stop, discard pending transcription queue, and clear transcript.
-5) Prompt-to-Type (`Ctrl+Shift+Alt+P`): start recording in “prompt” mode. Speak the task (e.g., “Draft an apology email about the delay”). When you stop, the transcript is fed to the prompt generator and the draft is pasted at your cursor.
+- **UI**: Built with PyQt6 for a modern, frameless, transparent look.
+- **Audio**: Uses `sounddevice` with overlapping threads to capture continuous audio without gaps.
+- **AI**: Powered by Groq (Whisper for transcription, Llama 3 for formatting/generation).
+- **Input**: Uses `keyboard` for global hotkeys and `pyautogui` for text insertion.
 
-## Notes & limits
-- Clipboard-based paste is fastest; the formatted result is first copied, then pasted—so you can re-paste if needed.
-- Recording continues indefinitely until you stop; segments roll every 12/15s, are queued in start-time order, and transcribed sequentially by 2–5 workers (configurable) with retries (rate-limit retries back off ~5s, other errors ~1s). Completed transcripts are appended in order before formatting.
-- Network failures are surfaced clearly; rate-limited keys auto cool-down for 5 minutes and rotate to the next available key. If all keys are cooling down, you’ll be told to wait and retry.
-- Tk window must stay open for visuals; close app with Ctrl+C in the terminal if needed.
-- Rate limits: if a key is rate-limited, it is cooled down for 5 minutes and the next key is tried. If all keys are cooling down, you’ll see a message to wait and try again. Groq free-tier doesn’t expose remaining quota, so pre-emptive 90% checks aren’t possible.
+## ❓ Troubleshooting
+
+If the application crashes or behaves unexpectedly (especially when running without a terminal window), check the `audio_flow.log` file. It is automatically created in the same folder as the executable and contains detailed error messages.
+
+---

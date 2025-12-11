@@ -8,3 +8,7 @@ __pycache__/
 /.vscode/
 **/node_modules/
 *.log
+
+# PyInstaller
+build/
+dist/

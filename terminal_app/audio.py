@@ -91,7 +91,7 @@ class OverlapAudioManager:
         self._active: List[RecordingSegment] = []
         self._lock = threading.Lock()
         self._paused = False
-        self._pending_queue: queue.PriorityQueue[tuple[float, Path]] = queue.PriorityQueue()
+        self._pending_queue: queue.PriorityQueue[tuple[float, Optional[Path]]] = queue.PriorityQueue()
         self._results: List[tuple[float, str]] = []
         self._results_lock = threading.Lock()
         self._transcriber_thread: threading.Thread | None = None
@@ -176,9 +176,11 @@ class OverlapAudioManager:
             try:
                 start_ts, path = self._pending_queue.get(timeout=0.5)
             except queue.Empty:
-                if self._stop_all.is_set():
-                    break
                 continue
+            
+            if path is None:
+                break
+
             text = self._transcribe_single(path)
             if text:
                 with self._results_lock:
@@ -213,6 +215,10 @@ class OverlapAudioManager:
         if self._scheduler:
             self._scheduler.join(timeout=2)
         self._stop_active_segments()
+        
+        # Signal transcriber to stop
+        self._pending_queue.put((float('inf'), None))
+        
         if self._transcriber_thread:
             self._transcriber_thread.join(timeout=30)
             self._transcriber_thread = None
@@ -242,9 +248,14 @@ class OverlapAudioManager:
         while not self._pending_queue.empty():
             try:
                 _, path = self._pending_queue.get_nowait()
-                path.unlink(missing_ok=True)
+                if path:
+                    path.unlink(missing_ok=True)
             except queue.Empty:
                 break
+        
+        # Signal transcriber to stop
+        self._pending_queue.put((float('inf'), None))
+        
         # Stop transcriber
         if self._transcriber_thread:
             self._transcriber_thread.join(timeout=5)
